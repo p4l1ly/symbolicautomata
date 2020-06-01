@@ -16,8 +16,26 @@
             <artifactId>maven-compiler-plugin</artifactId>
             <version>3.2</version>
         </plugin>
+        <plugin>
+            <groupId>org.apache.maven.plugins</groupId>
+            <artifactId>maven-jar-plugin</artifactId>
+            <configuration>
+                <archive>
+                    <manifest>
+                        <mainClass>benchmark.RunLTLExp</mainClass>
+                    </manifest>
+                </archive>
+            </configuration>
+        </plugin>
     </plugins>
   </build>
+  <repositories>
+    <repository>
+        <id>repository-sonatype</id>
+        <name>repository-sonatype</name>
+        <url>https://repository.sonatype.org/service/local/repositories/central-proxy/</url>
+    </repository>
+  </repositories>
   <dependencies>
   	<dependency>
   		<groupId>org.ow2.sat4j</groupId>
@@ -55,5 +73,10 @@
         	<artifactId>Parsers</artifactId>
         	<version>1.0</version>
         </dependency>
+    <dependency>
+      <groupId>org.typemeta</groupId>
+      <artifactId>funcj-parser</artifactId>
+      <version>0.6.15</version>
+    </dependency>
   </dependencies>
 </project>

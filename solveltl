@@ -1,0 +1,5 @@
+> /tmp/foo.ltl.spin
+while read l; do
+  echo $l | ../ltl-translators/.stack-work/dist/x86_64-linux-tinfo6/Cabal-2.4.0.1/build/ltl-translators-exe/ltl-translators-exe dummy out=spin >> /tmp/foo.ltl.spin
+done
+mvn exec:java -pl SVPABenchmark -Dexec.mainClass=benchmark.LtlEmptiness -Dexec.args=/tmp/foo.ltl.spin
