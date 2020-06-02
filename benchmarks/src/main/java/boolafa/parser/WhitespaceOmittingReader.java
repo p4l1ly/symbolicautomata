@@ -1,4 +1,4 @@
-package benchmark.parser;
+package boolafa.parser;
 
 import java.io.BufferedReader;
 import java.io.IOException;

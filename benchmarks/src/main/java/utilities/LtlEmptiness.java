@@ -1,4 +1,4 @@
-package benchmark;
+package utilities;
 
 import java.io.FileReader;
 import java.io.FileWriter;
@@ -14,7 +14,7 @@ import automata.safa.BooleanExpressionFactory;
 import automata.safa.SAFA;
 import automata.safa.booleanexpression.BDDExpression;
 import automata.safa.booleanexpression.BDDExpressionFactory;
-import benchmark.ltlconverter.LTLConverter;
+import ltlconverter.LTLConverter;
 import logic.ltl.LTLFormula;
 import theory.bdd.BDD;
 import theory.bddalgebra.BDDSolver;

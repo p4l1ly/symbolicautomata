@@ -78,5 +78,15 @@
       <artifactId>funcj-parser</artifactId>
       <version>0.6.15</version>
     </dependency>
+    <dependency>
+      <groupId>org.typemeta</groupId>
+      <artifactId>funcj-json</artifactId>
+      <version>0.6.15</version>
+    </dependency>
+    <dependency>
+        <groupId>org.apache.commons</groupId>
+        <artifactId>commons-collections4</artifactId>
+        <version>4.1</version>
+    </dependency>
   </dependencies>
 </project>
