@@ -9,6 +9,7 @@ import java.io.Reader;
 import java.io.StringReader;
 import java.util.ArrayList;
 import java.util.Collection;
+import java.util.Optional;
 import java.util.stream.Collectors;
 
 import org.apache.commons.collections4.IterableUtils;
@@ -21,8 +22,11 @@ import org.typemeta.funcj.parser.Input;
 import org.typemeta.funcj.parser.Parser;
 import org.typemeta.funcj.parser.Ref;
 
+import automata.safa.BooleanExpressionFactory;
 import automata.safa.SAFA;
 import automata.safa.SAFAInputMove;
+import automata.safa.booleanexpression.BDDExpression;
+import automata.safa.booleanexpression.BDDExpressionFactory;
 import automata.safa.booleanexpression.PositiveBooleanExpression;
 import automata.safa.booleanexpression.PositiveBooleanExpressionFactory;
 import automata.safa.booleanexpression.PositiveBooleanExpressionFactorySimple;
@@ -30,6 +34,7 @@ import automata.safa.booleanexpression.PositiveId;
 import boolafa.parser.WhitespaceOmittingReader;
 import theory.bdd.BDD;
 import theory.bddalgebra.BDDSolver;
+import theory.sat.SATBooleanAlgebraSimple;
 
 public class BoolAfa {
     static BoolExpr etrue = new True();
@@ -132,7 +137,6 @@ public class BoolAfa {
         PositiveBooleanExpression initialState = new PositiveId(0);
         Collection<Integer> finalStates = new ArrayList<Integer>();
 
-        BDDSolver algebra = new BDDSolver(acnt);
         PositiveBooleanExpressionFactory positive_factory =
             new PositiveBooleanExpressionFactorySimple();
 
@@ -144,39 +148,120 @@ public class BoolAfa {
             i++;
         }
 
-        BDD sa_bdds[] = new BDD[sa_defs.length];
-        i = 0;
-        for (BoolExpr sa_def: sa_defs) {
-            sa_bdds[i] = sa_def.bdd(sa_bdds, algebra);
-            i++;
-        }
+        Boolean get_symbols_using_bdds =
+            Optional.ofNullable(System.getenv("GET_SYMBOLS_USING_BDDS"))
+            .orElse("true")
+            .equals("true");
+        Boolean get_successors_using_bdds =
+            Optional.ofNullable(System.getenv("GET_SUCCESSORS_USING_BDDS"))
+            .orElse("false")
+            .equals("true");
 
-        Collection<SAFAInputMove<BDD, BDD>> transitions = new ArrayList<>();
-        i = 0;
-        for (ArrayList<QDefPart> qdef: qdefs) {
-            for (QDefPart qdefpart: qdef) {
-                transitions.add(new SAFAInputMove<BDD, BDD>(
-                    i, sq_exprs[qdefpart.post], sa_bdds[qdefpart.guard]
-                ));
+        if (get_symbols_using_bdds) {
+            BDDSolver algebra = new BDDSolver(acnt);
+
+            BDD sa_bdds[] = new BDD[sa_defs.length];
+            i = 0;
+            for (BoolExpr sa_def: sa_defs) {
+                sa_bdds[i] = sa_def.bdd(sa_bdds, algebra);
+                i++;
             }
-            i++;
+
+            Collection<SAFAInputMove<BDD, BDD>> transitions = new ArrayList<>();
+            i = 0;
+            for (ArrayList<QDefPart> qdef: qdefs) {
+                for (QDefPart qdefpart: qdef) {
+                    transitions.add(new SAFAInputMove<BDD, BDD>(
+                        i, sq_exprs[qdefpart.post], sa_bdds[qdefpart.guard]
+                    ));
+                }
+                i++;
+            }
+
+            SAFA<BDD, BDD> afa = SAFA.MkSAFA(
+                transitions, initialState, finalStates, algebra, false, false, false
+            );
+
+            // run //////////////////////////////////////////////////////////////////
+
+            Boolean is_empty;
+
+            if (get_successors_using_bdds) {
+                BooleanExpressionFactory<BDDExpression> succ_factory =
+                    new BDDExpressionFactory(afa.stateCount() + 1);
+                is_empty = SAFA.isEquivalent
+                    ( afa
+                    , SAFA.getEmptySAFA(algebra)
+                    , algebra
+                    , succ_factory
+                    , 60000
+                    ).getFirst();
+            }
+            else {
+                is_empty = SAFA.isEquivalent
+                    ( afa
+                    , SAFA.getEmptySAFA(algebra)
+                    , algebra
+                    , SAFA.getBooleanExpressionFactory()
+                    , 60000
+                    ).getFirst();
+            }
+
+            System.out.println(is_empty ? "empty" : "nonempty");
         }
+        else {
+            SATBooleanAlgebraSimple algebra = new SATBooleanAlgebraSimple(acnt);
 
-        SAFA<BDD, BDD> afa = SAFA.MkSAFA(
-            transitions, initialState, finalStates, algebra, false, false, false
-        );
+            Integer sa_sat_formulas[] = new Integer[sa_defs.length];
+            i = 0;
+            for (BoolExpr sa_def: sa_defs) {
+                sa_sat_formulas[i] = sa_def.sat_formula(sa_sat_formulas, algebra);
+                i++;
+            }
 
-        // run //////////////////////////////////////////////////////////////////
+            Collection<SAFAInputMove<Integer, boolean[]>> transitions =
+                new ArrayList<SAFAInputMove<Integer, boolean[]>>();
+            i = 0;
+            for (ArrayList<QDefPart> qdef: qdefs) {
+                for (QDefPart qdefpart: qdef) {
+                    transitions.add(new SAFAInputMove<Integer, boolean[]>(
+                        i, sq_exprs[qdefpart.post], sa_sat_formulas[qdefpart.guard]
+                    ));
+                }
+                i++;
+            }
 
-        Boolean is_empty = SAFA.isEquivalent
-            ( afa
-            , SAFA.getEmptySAFA(algebra)
-            , algebra
-            , SAFA.getBooleanExpressionFactory()
-            , 60000
-            ).getFirst();
+            SAFA<Integer, boolean[]> afa = SAFA.MkSAFA(
+                transitions, initialState, finalStates, algebra, false, false, false
+            );
 
-        System.out.println(is_empty ? "empty" : "nonempty");
+            // run //////////////////////////////////////////////////////////////////
+
+            Boolean is_empty;
+
+            if (get_successors_using_bdds) {
+                BooleanExpressionFactory<BDDExpression> succ_factory =
+                    new BDDExpressionFactory(afa.stateCount() + 1);
+                is_empty = SAFA.isEquivalent
+                    ( afa
+                    , SAFA.getEmptySAFA(algebra)
+                    , algebra
+                    , succ_factory
+                    , 60000
+                    ).getFirst();
+            }
+            else {
+                is_empty = SAFA.isEquivalent
+                    ( afa
+                    , SAFA.getEmptySAFA(algebra)
+                    , algebra
+                    , SAFA.getBooleanExpressionFactory()
+                    , 60000
+                    ).getFirst();
+            }
+
+            System.out.println(is_empty ? "empty" : "nonempty");
+        }
     }
 }
 
@@ -202,6 +287,7 @@ class QDefPart {
 
 abstract class BoolExpr {
     abstract BDD bdd(BDD bdds[], BDDSolver solver);
+    abstract Integer sat_formula(Integer others[], SATBooleanAlgebraSimple algebra);
     abstract PositiveBooleanExpression positive
         ( PositiveBooleanExpression exprs[]
         , PositiveBooleanExpressionFactory factory
@@ -212,6 +298,11 @@ class True extends BoolExpr {
     @Override
     BDD bdd(BDD bdds[], BDDSolver solver) {
         return solver.factory.one();
+    }
+
+    @Override
+    Integer sat_formula(Integer others[], SATBooleanAlgebraSimple algebra) {
+        return algebra.True();
     }
 
     @Override
@@ -227,6 +318,11 @@ class False extends BoolExpr {
     @Override
     BDD bdd(BDD bdds[], BDDSolver solver) {
         return solver.factory.zero();
+    }
+
+    @Override
+    Integer sat_formula(Integer others[], SATBooleanAlgebraSimple algebra) {
+        return algebra.False();
     }
 
     @Override
@@ -248,6 +344,11 @@ class Var extends BoolExpr {
     }
 
     @Override
+    Integer sat_formula(Integer others[], SATBooleanAlgebraSimple algebra) {
+        return i + 1;
+    }
+
+    @Override
     PositiveBooleanExpression positive
     ( PositiveBooleanExpression exprs[]
     , PositiveBooleanExpressionFactory factory
@@ -266,6 +367,11 @@ class ExprRef extends BoolExpr {
     }
 
     @Override
+    Integer sat_formula(Integer others[], SATBooleanAlgebraSimple algebra) {
+        return others[i];
+    }
+
+    @Override
     PositiveBooleanExpression positive
     ( PositiveBooleanExpression exprs[]
     , PositiveBooleanExpressionFactory factory
@@ -281,6 +387,11 @@ class Not extends BoolExpr {
     @Override
     BDD bdd(BDD bdds[], BDDSolver solver) {
         return solver.MkNot(operand.bdd(bdds, solver));
+    }
+
+    @Override
+    Integer sat_formula(Integer others[], SATBooleanAlgebraSimple algebra) {
+        return algebra.MkNot(operand.sat_formula(others, algebra));
     }
 
     @Override
@@ -306,6 +417,15 @@ class And extends BoolExpr {
     }
 
     @Override
+    Integer sat_formula(Integer others[], SATBooleanAlgebraSimple algebra) {
+        return algebra.MkAnd(
+            operands.stream()
+            .map(x -> x.sat_formula(others, algebra))
+            .collect(Collectors.toList())
+        );
+    }
+
+    @Override
     PositiveBooleanExpression positive
     ( PositiveBooleanExpression exprs[]
     , PositiveBooleanExpressionFactory factory
@@ -325,6 +445,15 @@ class Or extends BoolExpr {
         return solver.MkOr(
             operands.stream()
             .map(x -> x.bdd(bdds, solver))
+            .collect(Collectors.toList())
+        );
+    }
+
+    @Override
+    Integer sat_formula(Integer others[], SATBooleanAlgebraSimple algebra) {
+        return algebra.MkOr(
+            operands.stream()
+            .map(x -> x.sat_formula(others, algebra))
             .collect(Collectors.toList())
         );
     }

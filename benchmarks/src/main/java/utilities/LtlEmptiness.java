@@ -18,8 +18,6 @@ import ltlconverter.LTLConverter;
 import logic.ltl.LTLFormula;
 import theory.bdd.BDD;
 import theory.bddalgebra.BDDSolver;
-import utilities.Pair;
-import utilities.Timers;
 
 public class LtlEmptiness {
     static long timeout = 700000;
