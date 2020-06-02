@@ -25,6 +25,7 @@ import automata.safa.SAFA;
 import automata.safa.SAFAInputMove;
 import automata.safa.booleanexpression.PositiveBooleanExpression;
 import automata.safa.booleanexpression.PositiveBooleanExpressionFactory;
+import automata.safa.booleanexpression.PositiveBooleanExpressionFactorySimple;
 import automata.safa.booleanexpression.PositiveId;
 import boolafa.parser.WhitespaceOmittingReader;
 import theory.bdd.BDD;
@@ -133,7 +134,7 @@ public class BoolAfa {
 
         BDDSolver algebra = new BDDSolver(acnt);
         PositiveBooleanExpressionFactory positive_factory =
-            new PositiveBooleanExpressionFactory();
+            new PositiveBooleanExpressionFactorySimple();
 
         PositiveBooleanExpression sq_exprs[] =
             new PositiveBooleanExpression[sq_defs.length];
