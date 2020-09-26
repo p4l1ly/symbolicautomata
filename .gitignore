@@ -89,3 +89,7 @@ TestSVPA/TestSVPA.iml
 TestSVPA/src/.DS_Store
 TestSVPA/src/test/.DS_Store
 symbolicautomata.iml
+
+.classpath
+.settings
+/benchmarks/build/

@@ -93,8 +93,17 @@ public class BoolAfa {
         return solver.factory.one();
     }
 
+    static {
+        System.loadLibrary("boolafaRpc");
+    }
 
-    public static void main(String[] args)
+    public static void main(String[] args) {
+        new BoolAfa().runRpcServer();
+    }
+
+    private native void runRpcServer();
+
+    public static void main2(String[] args)
     throws InterruptedException, TimeoutException, java.io.IOException {
         // env //////////////////////////////////////////////////////////////////
         Boolean get_symbols_using_bdds =
