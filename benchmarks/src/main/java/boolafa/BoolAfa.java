@@ -1,5 +1,6 @@
 package boolafa;
 
+import java.nio.ByteBuffer;
 import java.util.ArrayList;
 import java.util.Collection;
 import java.util.Optional;
@@ -9,6 +10,10 @@ import java.util.stream.StreamSupport;
 import org.sat4j.specs.TimeoutException;
 import org.capnproto.StructList;
 import org.capnproto.ListList;
+import org.capnproto.ReaderArena;
+import org.capnproto.ReaderOptions;
+import org.capnproto.SegmentReader;
+import org.capnproto.AnyPointer;
 
 import automata.safa.BooleanExpressionFactory;
 import automata.safa.SAFA;
@@ -29,6 +34,18 @@ import theory.sat.SATBooleanAlgebraSimple;
 
 
 public class BoolAfa {
+    static Boolean GET_SYMBOLS_USING_BDDS =
+        Optional.ofNullable(System.getenv("GET_SYMBOLS_USING_BDDS"))
+        .orElse("true")
+        .equals("true");
+    static Boolean GET_SUCCESSORS_USING_BDDS =
+        Optional.ofNullable(System.getenv("GET_SUCCESSORS_USING_BDDS"))
+        .orElse("false")
+        .equals("true");
+    static long TIMEOUT = 60000;
+
+    IsEmpty is_empty_interface;
+
     static PositiveBooleanExpression fromQTerm
     ( QTerm.Reader qterm
     , PositiveBooleanExpression exprs[]
@@ -43,6 +60,8 @@ public class BoolAfa {
         case OR: return StreamSupport.stream(qterm.getOr().spliterator(), false)
             .map(x -> fromQTerm(x, exprs, factory))
             .reduce((a, b) -> factory.MkOr(a, b)).get();
+        case _NOT_IN_SCHEMA:
+            System.err.println("not in schema");
         }
         return factory.True();  // unreachable code
     }
@@ -66,6 +85,8 @@ public class BoolAfa {
             .map(x -> sat_formula(x, others, algebra))
             .collect(Collectors.toList())
         );
+        case _NOT_IN_SCHEMA:
+            System.err.println("not in schema");
         }
         return algebra.True();  // unreachable code
     }
@@ -89,6 +110,8 @@ public class BoolAfa {
             .map(x -> bdd(x, bdds, solver))
             .collect(Collectors.toList())
         );
+        case _NOT_IN_SCHEMA:
+            System.err.println("not in schema");
         }
         return solver.factory.one();
     }
@@ -98,36 +121,50 @@ public class BoolAfa {
     }
 
     public static void main(String[] args) {
-        new BoolAfa().runRpcServer();
+        BoolAfa.runRpcServer();
     }
 
-    private native void runRpcServer();
+    private static native void runRpcServer();
 
-    public static void main2(String[] args)
-    throws InterruptedException, TimeoutException, java.io.IOException {
-        // env //////////////////////////////////////////////////////////////////
-        Boolean get_symbols_using_bdds =
-            Optional.ofNullable(System.getenv("GET_SYMBOLS_USING_BDDS"))
-            .orElse("true")
-            .equals("true");
-        Boolean get_successors_using_bdds =
-            Optional.ofNullable(System.getenv("GET_SUCCESSORS_USING_BDDS"))
-            .orElse("false")
-            .equals("true");
+    public BoolAfa(
+        ByteBuffer[] segments,
+        int segment_ix,
+        int data_pos,
+        int pointer_pos,
+        int data_size_bits,
+        short pointer_count
+    ) {
+        for (ByteBuffer seg : segments) {
+            seg.order(java.nio.ByteOrder.LITTLE_ENDIAN);
+        }
 
+        ReaderOptions options = ReaderOptions.DEFAULT_READER_OPTIONS;
+        ReaderArena arena = new ReaderArena(segments, options.traversalLimitInWords);
 
-        // build ////////////////////////////////////////////////////////////////
+        SegmentReader segment = arena.tryGetSegment(segment_ix);
+        SeparatedAfa.Reader sepafa = SeparatedAfa.factory.constructReader(
+            segment, data_pos*8, pointer_pos, data_size_bits, pointer_count,
+            options.nestingLimit
+        );
+
+        try {
+            is_empty_interface = load(sepafa);
+        } catch (TimeoutException e) {
+            System.err.println("Timeout loading AFA, this should not happen.");
+        }
+    }
+
+    public boolean is_empty() throws TimeoutException {
+        boolean x = is_empty_interface.is_empty();
+        return x;
+    }
+
+    public static IsEmpty load(SeparatedAfa.Reader sepafa) throws TimeoutException {
         int i;
-
-        org.capnproto.MessageReader message =
-            org.capnproto.SerializePacked.readFromUnbuffered(
-                (new java.io.FileInputStream(java.io.FileDescriptor.in)).getChannel()
-            );
-
-        SeparatedAfa.Reader sepafa = message.getRoot(SeparatedAfa.factory);
         StructList.Reader<QTerm.Reader> qterms = sepafa.getQterms();
         StructList.Reader<ATerm.Reader> aterms = sepafa.getAterms();
         ListList.Reader<StructList.Reader<Conjunct.Reader>> qdefs = sepafa.getStates();
+
         int state_count = qdefs.size();
 
         PositiveBooleanExpression initialState = new PositiveId(0);
@@ -147,7 +184,7 @@ public class BoolAfa {
             i++;
         }
 
-        if (get_symbols_using_bdds) {
+        if (GET_SYMBOLS_USING_BDDS) {
             BDDSolver algebra = new BDDSolver(sepafa.getVariableCount());
             BDD atrue = algebra.factory.one();
 
@@ -180,12 +217,11 @@ public class BoolAfa {
 
             // run //////////////////////////////////////////////////////////////////
 
-            Boolean is_empty;
-
-            if (get_successors_using_bdds) {
+            if (GET_SUCCESSORS_USING_BDDS) {
                 BooleanExpressionFactory<BDDExpression> succ_factory =
                     new BDDExpressionFactory(afa.stateCount() + 1);
-                is_empty = SAFA.isEquivalent
+
+                return () -> SAFA.isEquivalent
                     ( afa
                     , SAFA.getEmptySAFA(algebra)
                     , algebra
@@ -194,7 +230,7 @@ public class BoolAfa {
                     ).getFirst();
             }
             else {
-                is_empty = SAFA.isEquivalent
+                return () -> SAFA.isEquivalent
                     ( afa
                     , SAFA.getEmptySAFA(algebra)
                     , algebra
@@ -202,8 +238,6 @@ public class BoolAfa {
                     , 60000
                     ).getFirst();
             }
-
-            System.out.println(is_empty ? "empty" : "nonempty");
         }
         else {
             SATBooleanAlgebraSimple algebra = new SATBooleanAlgebraSimple(
@@ -241,30 +275,30 @@ public class BoolAfa {
 
             // run //////////////////////////////////////////////////////////////////
 
-            Boolean is_empty;
-
-            if (get_successors_using_bdds) {
+            if (GET_SUCCESSORS_USING_BDDS) {
                 BooleanExpressionFactory<BDDExpression> succ_factory =
                     new BDDExpressionFactory(afa.stateCount() + 1);
-                is_empty = SAFA.isEquivalent
+                return () -> SAFA.isEquivalent
                     ( afa
                     , SAFA.getEmptySAFA(algebra)
                     , algebra
                     , succ_factory
-                    , 60000
+                    , TIMEOUT
                     ).getFirst();
             }
             else {
-                is_empty = SAFA.isEquivalent
+                return () -> SAFA.isEquivalent
                     ( afa
                     , SAFA.getEmptySAFA(algebra)
                     , algebra
                     , SAFA.getBooleanExpressionFactory()
-                    , 60000
+                    , TIMEOUT
                     ).getFirst();
             }
-
-            System.out.println(is_empty ? "empty" : "nonempty");
         }
     }
+}
+
+interface IsEmpty {
+    boolean is_empty() throws TimeoutException;
 }

@@ -13,7 +13,7 @@ extern "C" {
  * Signature: ()V
  */
 JNIEXPORT void JNICALL Java_boolafa_BoolAfa_runRpcServer
-  (JNIEnv *, jobject);
+  (JNIEnv *, jclass);
 
 #ifdef __cplusplus
 }
