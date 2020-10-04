@@ -13,7 +13,6 @@ import org.capnproto.ListList;
 import org.capnproto.ReaderArena;
 import org.capnproto.ReaderOptions;
 import org.capnproto.SegmentReader;
-import org.capnproto.AnyPointer;
 
 import automata.safa.BooleanExpressionFactory;
 import automata.safa.SAFA;
@@ -24,6 +23,8 @@ import automata.safa.booleanexpression.PositiveBooleanExpression;
 import automata.safa.booleanexpression.PositiveBooleanExpressionFactory;
 import automata.safa.booleanexpression.PositiveBooleanExpressionFactorySimple;
 import automata.safa.booleanexpression.PositiveId;
+import automata.safa.BooleanExpression;
+import theory.BooleanAlgebra;
 import org.automata.safa.capnp.SeparatedAfaSchema.SeparatedAfa;
 import org.automata.safa.capnp.SeparatedAfaSchema.QTerm;
 import org.automata.safa.capnp.SeparatedAfaSchema.ATerm;
@@ -31,6 +32,8 @@ import org.automata.safa.capnp.SeparatedAfaSchema.Conjunct;
 import theory.bdd.BDD;
 import theory.bddalgebra.BDDSolver;
 import theory.sat.SATBooleanAlgebraSimple;
+
+import utilities.Timers;
 
 
 public class BoolAfa {
@@ -42,9 +45,8 @@ public class BoolAfa {
         Optional.ofNullable(System.getenv("GET_SUCCESSORS_USING_BDDS"))
         .orElse("false")
         .equals("true");
-    static long TIMEOUT = 60000;
 
-    IsEmpty is_empty_interface;
+    ModelChecking solver;
 
     static PositiveBooleanExpression fromQTerm
     ( QTerm.Reader qterm
@@ -148,18 +150,22 @@ public class BoolAfa {
         );
 
         try {
-            is_empty_interface = load(sepafa);
+            solver = load(sepafa);
         } catch (TimeoutException e) {
             System.err.println("Timeout loading AFA, this should not happen.");
         }
     }
 
-    public boolean is_empty() throws TimeoutException {
-        boolean x = is_empty_interface.is_empty();
-        return x;
+    public int solve() throws TimeoutException {
+        return solver.solve();
     }
+    public int pause() { return solver.pause(); }
+    public int resume() { return solver.resume(); }
+    public int cancel() { return solver.cancel(); }
+    public int getStatus() { return solver.getStatus(); }
+    public int getTime() { return solver.getTime(); }
 
-    public static IsEmpty load(SeparatedAfa.Reader sepafa) throws TimeoutException {
+    public static ModelChecking load(SeparatedAfa.Reader sepafa) throws TimeoutException {
         int i;
         StructList.Reader<QTerm.Reader> qterms = sepafa.getQterms();
         StructList.Reader<ATerm.Reader> aterms = sepafa.getAterms();
@@ -215,28 +221,15 @@ public class BoolAfa {
                 transitions, initialState, finalStates, algebra, false, false, false
             );
 
-            // run //////////////////////////////////////////////////////////////////
-
             if (GET_SUCCESSORS_USING_BDDS) {
                 BooleanExpressionFactory<BDDExpression> succ_factory =
                     new BDDExpressionFactory(afa.stateCount() + 1);
 
-                return () -> SAFA.isEquivalent
-                    ( afa
-                    , SAFA.getEmptySAFA(algebra)
-                    , algebra
-                    , succ_factory
-                    , 60000
-                    ).getFirst();
+                return new ModelChecker<>(afa, algebra, succ_factory);
             }
             else {
-                return () -> SAFA.isEquivalent
-                    ( afa
-                    , SAFA.getEmptySAFA(algebra)
-                    , algebra
-                    , SAFA.getBooleanExpressionFactory()
-                    , 60000
-                    ).getFirst();
+                return new ModelChecker<>(
+                    afa, algebra, SAFA.getBooleanExpressionFactory());
             }
         }
         else {
@@ -273,32 +266,95 @@ public class BoolAfa {
                 transitions, initialState, finalStates, algebra, false, false, false
             );
 
-            // run //////////////////////////////////////////////////////////////////
-
             if (GET_SUCCESSORS_USING_BDDS) {
                 BooleanExpressionFactory<BDDExpression> succ_factory =
                     new BDDExpressionFactory(afa.stateCount() + 1);
-                return () -> SAFA.isEquivalent
-                    ( afa
-                    , SAFA.getEmptySAFA(algebra)
-                    , algebra
-                    , succ_factory
-                    , TIMEOUT
-                    ).getFirst();
+                return new ModelChecker<>(afa, algebra, succ_factory);
             }
             else {
-                return () -> SAFA.isEquivalent
-                    ( afa
-                    , SAFA.getEmptySAFA(algebra)
-                    , algebra
-                    , SAFA.getBooleanExpressionFactory()
-                    , TIMEOUT
-                    ).getFirst();
+                return new ModelChecker<>(
+                    afa, algebra, SAFA.getBooleanExpressionFactory());
             }
         }
     }
 }
 
-interface IsEmpty {
-    boolean is_empty() throws TimeoutException;
+interface ModelChecking {
+    int solve() throws TimeoutException;
+    int pause();
+    int resume();
+    int cancel();
+    int getStatus();
+    int getTime();
+}
+
+class ModelChecker<P, S, E extends BooleanExpression> implements ModelChecking {
+    SAFA<P, S> aut, empty;
+    BooleanAlgebra<P, S> algebra;
+    BooleanExpressionFactory<E> boolexpr;
+
+    SAFA.ControlHandler control;
+
+    public ModelChecker(
+        SAFA<P, S> aut,
+        BooleanAlgebra<P, S> algebra,
+        BooleanExpressionFactory<E> boolexpr
+    ) {
+        this.aut = aut;
+        this.empty = SAFA.getEmptySAFA(algebra);
+        this.algebra = algebra;
+        this.boolexpr = boolexpr;
+        this.control = new SAFA.ControlHandler();
+    }
+
+    @Override
+    public int solve() throws TimeoutException {
+        control.status.set(SAFA.ControlHandler.RUNNING);
+        try {
+            boolean is_empty = SAFA.isEquivalent(
+                aut, empty, algebra, boolexpr, control).getFirst();
+            return is_empty ? 0 : 1;
+        }
+        catch(TimeoutException e) {
+            return 2;
+        }
+    }
+
+    @Override
+    public int pause() {
+        int old_status = control.status.get();
+        if (old_status == SAFA.ControlHandler.RUNNING) {
+            control.pauseMutex.lock();
+            control.status.set(SAFA.ControlHandler.PAUSED);
+            control.runningMutex.lock();
+            control.pauseMutex.unlock();
+        }
+        return old_status;
+    }
+
+    @Override
+    public int resume() {
+        int old_status = control.status.get();
+        if (old_status == SAFA.ControlHandler.PAUSED) {
+            control.status.set(SAFA.ControlHandler.RUNNING);
+            control.runningMutex.unlock();
+        }
+        return old_status;
+    }
+
+    @Override
+    public int cancel() {
+        int old_status = control.status.get();
+        control.status.set(SAFA.ControlHandler.CANCELLED);
+        if (old_status == SAFA.ControlHandler.PAUSED) {
+            control.runningMutex.unlock();
+        }
+        return old_status;
+    }
+
+    @Override
+    public int getStatus() { return control.status.get(); }
+
+    @Override
+    public int getTime() { return (int)Timers.getFull(); }
 }

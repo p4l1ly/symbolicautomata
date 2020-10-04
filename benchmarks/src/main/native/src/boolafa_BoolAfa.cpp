@@ -3,30 +3,137 @@
 
 #include <automata-safa-capnp/SeparatedAfa.capnp.h>
 #include <automata-safa-capnp/SeparatedAfaRpc.capnp.h>
+#include <automata-safa-capnp/LoadedModelRpc.capnp.h>
 #include <capnp/ez-rpc.h>
 #include <capnp/pointer-helpers.h>
 #include <capnp/arena.h>
+#include <kj/thread.h>
 
 #include "boolafa_BoolAfa.h"
 
 namespace schema = automata_safa_capnp::separated_afa;
-namespace rpcschema = automata_safa_capnp::separated_afa_rpc;
+namespace rpcschema = automata_safa_capnp::rpc::separated_afa;
+namespace rpc = automata_safa_capnp::rpc;
 
+JavaVM *jvm;
 JNIEnv *env;
 jclass BoolAfa;
 jclass ByteBuffer;
 jmethodID BoolAfa_init;
-jmethodID BoolAfa_is_empty;
+jmethodID BoolAfa_solve;
+jmethodID BoolAfa_getTime;
+jmethodID BoolAfa_getStatus;
+jmethodID BoolAfa_pause;
+jmethodID BoolAfa_resume;
+jmethodID BoolAfa_cancel;
 
-class LoadedModelImpl final: public rpcschema::LoadedModel::Server {
+class ControlImpl final: public rpc::ModelChecking::Control::Server {
     jobject afa;
 
 public:
-    LoadedModelImpl(jobject afa) : afa(afa) {}
+    ControlImpl(jobject afa_) : afa(afa_) {}
+
+    kj::Promise<void> pause(PauseContext context) override {
+        setStatus(
+            context.getResults().getOldStatus(),
+            env->CallIntMethod(afa, BoolAfa_pause)
+        );
+        return kj::READY_NOW;
+    }
+
+    kj::Promise<void> resume(ResumeContext context) override {
+        setStatus(
+            context.getResults().getOldStatus(),
+            env->CallIntMethod(afa, BoolAfa_resume)
+        );
+        return kj::READY_NOW;
+    }
+
+    kj::Promise<void> cancel(CancelContext context) override {
+        setStatus(
+            context.getResults().getOldStatus(),
+            env->CallIntMethod(afa, BoolAfa_cancel)
+        );
+        return kj::READY_NOW;
+    }
+
+    kj::Promise<void> getStatus(GetStatusContext context) override {
+        setStatus(
+            context.getResults().getStatus(),
+            env->CallIntMethod(afa, BoolAfa_getStatus)
+        );
+        return kj::READY_NOW;
+    }
+
+private:
+    void setStatus(rpc::ModelChecking::Status::Builder status, int state) {
+        status.setTime(env->CallIntMethod(afa, BoolAfa_getTime));
+        switch(state) {
+            case 0:
+                status.setState(rpc::ModelChecking::Status::State::RUNNING); return;
+            case 3:
+                status.setState(rpc::ModelChecking::Status::State::INIT); return;
+            case 2:
+                status.setState(rpc::ModelChecking::Status::State::CANCELLED); return;
+            case 1:
+                status.setState(rpc::ModelChecking::Status::State::PAUSED); return;
+        }
+    }
+};
+
+class ModelCheckingImpl final: public rpc::ModelChecking::Server {
+    jobject afa;
+
+public:
+    ModelCheckingImpl(jobject afa) : afa(afa) {}
 
     kj::Promise<void> solve(SolveContext context) override {
-        jboolean is_empty = env->CallBooleanMethod(afa, BoolAfa_is_empty);
-        context.getResults().setEmpty(is_empty);
+        kj::MutexGuarded<kj::Maybe<const kj::Executor&>> executor;
+        kj::Own<kj::PromiseFulfiller<void>> fulfiller;
+
+        kj::Thread([&]() noexcept {
+            kj::EventLoop loop;
+            kj::WaitScope scope(loop);
+            *executor.lockExclusive() = kj::getCurrentThreadExecutor();
+
+            auto paf = kj::newPromiseAndFulfiller<void>();
+            fulfiller = kj::mv(paf.fulfiller);
+            paf.promise.wait(scope);
+        }).detach();
+
+        const kj::Executor *exec;
+        {
+            auto lock = executor.lockExclusive();
+            lock.wait([&](kj::Maybe<const kj::Executor&> value) {
+                return value != nullptr;
+            });
+            exec = &KJ_ASSERT_NONNULL(*lock);
+        }
+
+        rpc::ModelChecking::SolveResults::Builder result = context.getResults();
+
+        return exec->executeAsync(
+            [this, result, fulfiller{kj::mv(fulfiller)}]() mutable {
+                JNIEnv *env;
+                jvm->AttachCurrentThread((void**)&env, NULL);
+                jint r = env->CallIntMethod(afa, BoolAfa_solve);
+                switch(r) {
+                    case 0:
+                        result.setResult(rpc::ModelChecking::Result::EMPTY); break;
+                    case 1:
+                        result.setResult(rpc::ModelChecking::Result::NONEMPTY); break;
+                    case 2:
+                        result.setResult(rpc::ModelChecking::Result::CANCELLED); break;
+                }
+                result.setTime(env->CallIntMethod(afa, BoolAfa_getTime));
+
+                fulfiller->fulfill();
+            }
+        );
+    }
+
+    kj::Promise<void> getControl(GetControlContext context) override {
+        context.getResults().setControl(kj::heap<ControlImpl>(afa));
         return kj::READY_NOW;
     }
 };
@@ -77,7 +184,7 @@ public:
             segments, segment_id, data_pos, pointer_pos, data_size_bits, pointer_count
         );
 
-        context.getResults().setLoadedModel(kj::heap<LoadedModelImpl>(loaded_afa));
+        context.getResults().setLoadedModel(kj::heap<ModelCheckingImpl>(loaded_afa));
 
         return kj::READY_NOW;
     }
@@ -86,10 +193,16 @@ public:
 JNIEXPORT void JNICALL Java_boolafa_BoolAfa_runRpcServer(JNIEnv *env_, jclass BoolAfa_)
 {
     env = env_;
+    env->GetJavaVM(&jvm);
     BoolAfa = BoolAfa_;
     BoolAfa_init = env->GetMethodID(
         BoolAfa, "<init>", "([Ljava/nio/ByteBuffer;IIIIS)V");
-    BoolAfa_is_empty = env->GetMethodID(BoolAfa, "is_empty", "()Z");
+    BoolAfa_solve = env->GetMethodID(BoolAfa, "solve", "()I");
+    BoolAfa_getTime = env->GetMethodID(BoolAfa, "getTime", "()I");
+    BoolAfa_getStatus = env->GetMethodID(BoolAfa, "getStatus", "()I");
+    BoolAfa_pause = env->GetMethodID(BoolAfa, "pause", "()I");
+    BoolAfa_resume = env->GetMethodID(BoolAfa, "resume", "()I");
+    BoolAfa_cancel = env->GetMethodID(BoolAfa, "cancel", "()I");
     ByteBuffer = env->FindClass("java/nio/ByteBuffer");
 
     capnp::EzRpcServer server(kj::heap<LoaderImpl>(), "0.0.0.0", 4000);

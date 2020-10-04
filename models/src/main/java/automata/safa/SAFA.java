@@ -34,6 +34,9 @@ import utilities.Pair;
 import utilities.Timers;
 import utilities.UnionFindHopKarp;
 
+import java.util.concurrent.locks.ReentrantLock;
+import java.util.concurrent.atomic.AtomicInteger;
+
 /**
  * Symbolic finite automaton
  * 
@@ -531,11 +534,144 @@ public class SAFA<P, S> {
 	 * Checks whether laut and raut are equivalent using bisimulation up to
 	 * congruence.
 	 */
-	public static <P, S, E extends BooleanExpression> Pair<Boolean, List<S>> isEquivalent(SAFA<P, S> laut,
-			SAFA<P, S> raut, BooleanAlgebra<P, S> ba, BooleanExpressionFactory<E> boolexpr, long timeout)
-					throws TimeoutException {
+	public static <P, S, E extends BooleanExpression> Pair<Boolean, List<S>> 
+	checkEquivalenceOfTwoConfigurations(
+		SAFA<P, S> aut,
+		PositiveBooleanExpression c1,
+		PositiveBooleanExpression c2,
+		BooleanAlgebra<P, S> ba,
+		BooleanExpressionFactory<E> boolexpr,
+		ControlHandler control
+	) throws TimeoutException {
+		Timers.setForCongruence();
+		Timers.startFull();
+
+		SAFARelation similar = new SATRelation();
+
+		PriorityQueue<Pair<Pair<E, E>, List<S>>> worklist = new PriorityQueue<>(new RelationComparator<>());
+
+		BooleanExpressionMorphism<E> coerce = new BooleanExpressionMorphism<>((x) -> boolexpr.MkState(x), boolexpr);
+		E leftInitial = coerce.apply(c1);
+		E rightInitial = coerce.apply(c2);
+
+		similar.add(leftInitial, rightInitial);
+		worklist.add(new Pair<>(new Pair<>(leftInitial, rightInitial), new LinkedList<>()));
+		while (!worklist.isEmpty()) {
+			control.check();
+			Timers.oneMoreState();
+
+			Pair<Pair<E, E>, List<S>> next = worklist.remove();
+
+			E left = next.getFirst().getFirst();
+			E right = next.getFirst().getSecond();
+			List<S> witness = next.getSecond();
+
+			P guard = ba.True();
+			boolean isSat = true;
+			do {
+				control.check();
+
+				Timers.startSolver();
+				S model = ba.generateWitness(guard);
+				Timers.stopSolver();
+
+				P implicant = ba.True();
+				Map<Integer, E> move = new HashMap<>();
+				Set<Integer> states = new HashSet<>();
+				states.addAll(left.getStates());
+				states.addAll(right.getStates());
+
+				for (Integer s : states) {
+					E succ = boolexpr.False();
+					for (SAFAInputMove<P, S> tr : aut.getInputMovesFrom(s)) {
+						control.check();
+
+						Timers.startSolver();
+						boolean hm = ba.HasModel(tr.guard, model);
+						Timers.stopSolver();
+
+						if (hm) {
+							succ = boolexpr.MkOr(succ, coerce.apply(tr.to));
+							Timers.startSolver();
+							implicant = ba.MkAnd(implicant, tr.guard);
+							Timers.stopSolver();
+						} else {
+							Timers.startSolver();
+							implicant = ba.MkAnd(implicant, ba.MkNot(tr.guard));
+							Timers.stopSolver();
+						}
+					}
+					move.put(s, succ);
+				}
+
+				Timers.startSubsumption();
+				E leftSucc = boolexpr.substitute((lit) -> move.get(lit)).apply(left);
+				E rightSucc = boolexpr.substitute((lit) -> move.get(lit)).apply(right);
+				List<S> succWitness = new LinkedList<>();
+				succWitness.addAll(witness);
+				succWitness.add(model);
+
+				boolean checkIfDiff = leftSucc.hasModel(aut.finalStates) != rightSucc.hasModel(aut.finalStates);
+				Timers.stopSubsumption();
+
+				if (checkIfDiff) {
+					// leftSucc is accepting and rightSucc is rejecting or
+					// vice versa
+					Timers.stopFull();
+					return new Pair<>(false, succWitness);
+				} else{
+					Timers.startSubsumption();
+					if (!similar.isMember(leftSucc, rightSucc)) {
+						if (!similar.add(leftSucc, rightSucc)) {
+							Timers.stopSubsumption();
+							Timers.stopFull();
+							return new Pair<>(false, succWitness);
+						}
+						worklist.add(new Pair<>(new Pair<>(leftSucc, rightSucc), succWitness));
+					}else{
+						Timers.oneMoreSub();
+					}
+					Timers.stopSubsumption();
+				}
+				Timers.startSolver();
+				guard = ba.MkAnd(guard, ba.MkNot(implicant));
+
+				isSat =  ba.IsSatisfiable(guard);
+				Timers.stopSolver();
+			} while (isSat);
+		}
+		Timers.stopFull();
+		return new Pair<>(true, null);
+	}
+
+	/**
+	 * Checks whether laut and raut are equivalent using bisimulation up to
+	 * congruence.
+	 */
+	public static <P, S, E extends BooleanExpression> Pair<Boolean, List<S>> isEquivalent(
+		SAFA<P, S> laut,
+		SAFA<P, S> raut,
+		BooleanAlgebra<P, S> ba,
+		BooleanExpressionFactory<E> boolexpr,
+		long timeout
+	) throws TimeoutException {
 		Triple<SAFA<P, S>, PositiveBooleanExpression,PositiveBooleanExpression> triple = binaryOp(laut, raut, ba, BoolOp.Union);
 		return checkEquivalenceOfTwoConfigurations(triple.getLeft(), triple.getMiddle(), triple.getRight(), ba, boolexpr, timeout);
+	}
+
+	/**
+	 * Checks whether laut and raut are equivalent using bisimulation up to
+	 * congruence.
+	 */
+	public static <P, S, E extends BooleanExpression> Pair<Boolean, List<S>> isEquivalent(
+		SAFA<P, S> laut,
+		SAFA<P, S> raut,
+		BooleanAlgebra<P, S> ba,
+		BooleanExpressionFactory<E> boolexpr,
+		ControlHandler control
+	) throws TimeoutException {
+		Triple<SAFA<P, S>, PositiveBooleanExpression,PositiveBooleanExpression> triple = binaryOp(laut, raut, ba, BoolOp.Union);
+		return checkEquivalenceOfTwoConfigurations(triple.getLeft(), triple.getMiddle(), triple.getRight(), ba, boolexpr, control);
 	}
 
 	static class RelationComparator<E extends BooleanExpression, A> implements Comparator<Pair<Pair<E, E>, List<A>>> {
@@ -1061,4 +1197,37 @@ public class SAFA<P, S> {
 			return reached.get(state);
 	}
 
+	public static class ControlHandler {
+		public AtomicInteger status;
+		public ReentrantLock runningMutex;
+		public ReentrantLock pauseMutex;
+
+		public static final int RUNNING = 0;
+		public static final int PAUSED = 1;
+		public static final int CANCELLED = 2;
+		public static final int INIT = 3;
+
+		public ControlHandler() {
+			status = new AtomicInteger(INIT);
+			runningMutex = new ReentrantLock();
+			pauseMutex = new ReentrantLock();
+		}
+
+		public void check() throws TimeoutException {
+			if (status.get() != RUNNING) {
+				if (status.get() == PAUSED) {
+					runningMutex.unlock();
+					pauseMutex.lock();
+					Timers.stopFull();
+					runningMutex.lock();
+					Timers.startFull();
+					pauseMutex.unlock();
+				}
+				if (status.get() == CANCELLED) {
+					throw new TimeoutException();
+				}
+			}
+		}
+	}
 }
+
