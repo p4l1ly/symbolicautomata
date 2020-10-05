@@ -87,6 +87,10 @@ class ModelCheckingImpl final: public rpc::ModelChecking::Server {
 public:
     ModelCheckingImpl(jobject afa) : afa(afa) {}
 
+    ~ModelCheckingImpl() {
+        env->DeleteLocalRef(afa);
+    }
+
     kj::Promise<void> solve(SolveContext context) override {
         kj::MutexGuarded<kj::Maybe<const kj::Executor&>> executor;
         kj::Own<kj::PromiseFulfiller<void>> fulfiller;
@@ -205,7 +209,7 @@ JNIEXPORT void JNICALL Java_boolafa_BoolAfa_runRpcServer(JNIEnv *env_, jclass Bo
     BoolAfa_cancel = env->GetMethodID(BoolAfa, "cancel", "()I");
     ByteBuffer = env->FindClass("java/nio/ByteBuffer");
 
-    capnp::EzRpcServer server(kj::heap<LoaderImpl>(), "0.0.0.0", 4000);
+    capnp::EzRpcServer server(kj::heap<LoaderImpl>(), "0.0.0.0", 4001);
     auto& waitScope = server.getWaitScope();
     kj::NEVER_DONE.wait(waitScope);
 }
