@@ -84,7 +84,7 @@
       <dependency>
           <groupId>org.capnproto</groupId>
           <artifactId>runtime</artifactId>
-          <version>0.1.5</version>
+          <version>0.1.6-SNAPSHOT</version>
       </dependency>
       <dependency>
           <groupId>org.apache.commons</groupId>
@@ -94,7 +94,7 @@
       <dependency>
         <groupId>org.automata.safa.capnp</groupId>
         <artifactId>automata-safa-capnp</artifactId>
-        <version>1</version>
+        <version>1.1</version>
       </dependency>
   </dependencies>
 </project>

@@ -1,9 +1,9 @@
 #include <jni.h>
 #include <iostream>
 
-#include <automata-safa-capnp/SeparatedAfa.capnp.h>
-#include <automata-safa-capnp/SeparatedAfaRpc.capnp.h>
-#include <automata-safa-capnp/LoadedModelRpc.capnp.h>
+#include <automata-safa-capnp/Model/Separated.capnp.h>
+#include <automata-safa-capnp/Rpc/ModelChecker.capnp.h>
+#include <automata-safa-capnp/Rpc/ModelCheckers.capnp.h>
 #include <capnp/ez-rpc.h>
 #include <capnp/pointer-helpers.h>
 #include <capnp/arena.h>
@@ -11,9 +11,13 @@
 
 #include "boolafa_BoolAfa.h"
 
-namespace schema = automata_safa_capnp::separated_afa;
-namespace rpcschema = automata_safa_capnp::rpc::separated_afa;
-namespace rpc = automata_safa_capnp::rpc;
+#define DIVCEIL(x, y) ((x) == 0 ? 0 : 1 + (((x) - 1) / (y)))
+
+namespace sepafa = automata_safa_capnp::model::separated;
+namespace mc = automata_safa_capnp::rpc::model_checker;
+namespace mcs = automata_safa_capnp::rpc::model_checkers;
+using capnp::word;
+using kj::byte;
 
 JavaVM *jvm;
 JNIEnv *env;
@@ -27,7 +31,7 @@ jmethodID BoolAfa_pause;
 jmethodID BoolAfa_resume;
 jmethodID BoolAfa_cancel;
 
-class ControlImpl final: public rpc::ModelChecking::Control::Server {
+class ControlImpl final: public mc::Control::Server {
     jobject afa;
 
 public:
@@ -66,22 +70,22 @@ public:
     }
 
 private:
-    void setStatus(rpc::ModelChecking::Status::Builder status, int state) {
+    void setStatus(mc::Status::Builder status, int state) {
         status.setTime(env->CallIntMethod(afa, BoolAfa_getTime));
         switch(state) {
             case 0:
-                status.setState(rpc::ModelChecking::Status::State::RUNNING); return;
+                status.setState(mc::State::RUNNING); return;
             case 3:
-                status.setState(rpc::ModelChecking::Status::State::INIT); return;
+                status.setState(mc::State::INIT); return;
             case 2:
-                status.setState(rpc::ModelChecking::Status::State::CANCELLED); return;
+                status.setState(mc::State::CANCELLED); return;
             case 1:
-                status.setState(rpc::ModelChecking::Status::State::PAUSED); return;
+                status.setState(mc::State::PAUSED); return;
         }
     }
 };
 
-class ModelCheckingImpl final: public rpc::ModelChecking::Server {
+class ModelCheckingImpl final: public mc::ModelChecking<mcs::Emptiness>::Server {
     jobject afa;
 
 public:
@@ -116,7 +120,7 @@ public:
             exec = &KJ_ASSERT_NONNULL(*lock);
         }
 
-        rpc::ModelChecking::SolveResults::Builder result = context.getResults();
+        auto result = context.getResults();
 
         return exec->executeAsync(
             [this, result, fulfiller{kj::mv(fulfiller)}]() mutable {
@@ -124,12 +128,9 @@ public:
                 jvm->AttachCurrentThread((void**)&env, NULL);
                 jint r = env->CallIntMethod(afa, BoolAfa_solve);
                 switch(r) {
-                    case 0:
-                        result.setResult(rpc::ModelChecking::Result::EMPTY); break;
-                    case 1:
-                        result.setResult(rpc::ModelChecking::Result::NONEMPTY); break;
-                    case 2:
-                        result.setResult(rpc::ModelChecking::Result::CANCELLED); break;
+                    case 0: result.getMeta().setEmpty(true); break;
+                    case 1: result.getMeta().setEmpty(false); break;
+                    case 2: result.setCancelled(true); break;
                 }
                 result.setTime(env->CallIntMethod(afa, BoolAfa_getTime));
 
@@ -144,15 +145,14 @@ public:
     }
 };
 
-class LoaderImpl final: public rpcschema::Loader::Server {
+class LoaderImpl final: public mc::ModelChecker<sepafa::BoolAfa, mcs::Emptiness>::Server {
 public:
     kj::Promise<void> load(LoadContext context) override {
-        schema::SeparatedAfa::Reader afa = context.getParams().getModel();
+        sepafa::BoolAfa::Reader afa = context.getParams().getModel();
 
-        // Get the struct's low level environment
         capnp::_::StructReader reader =
-            capnp::_::PointerHelpers<schema::SeparatedAfa>::getInternalReader(afa);
-        capnp::_::SegmentReader* segment = reader.getSegment();
+            capnp::_::PointerHelpers<sepafa::BoolAfa>::getInternalReader(afa);
+        capnp::_::SegmentReader* segment = reader.segment;
         capnp::_::Arena* arena = segment->getArena();
 
         // Get segment count of the arena
@@ -181,7 +181,7 @@ public:
         int pointer_count = reader.getPointerSectionSize();
         int data_pos =
             segment->getOffsetTo((capnp::word*)reader.getLocation()) / capnp::WORDS;
-        int pointer_pos = data_pos + (data_size_bits / capnp::BITS_PER_WORD) ;
+        int pointer_pos = data_pos + (data_size_bits / capnp::BITS_PER_WORD);
         if (data_size_bits % capnp::BITS_PER_WORD) pointer_pos++;
 
         // Pass the capnp arena with the struct's location to Java
@@ -190,13 +190,13 @@ public:
             segments, segment_id, data_pos, pointer_pos, data_size_bits, pointer_count
         );
 
-        context.getResults().setLoadedModel(kj::heap<ModelCheckingImpl>(loaded_afa));
+        context.getResults().setChecking(kj::heap<ModelCheckingImpl>(loaded_afa));
 
         return kj::READY_NOW;
     }
 };
 
-JNIEXPORT void JNICALL Java_boolafa_BoolAfa_runRpcServer(JNIEnv *env_, jclass BoolAfa_)
+JNIEXPORT void JNICALL Java_boolafa_BoolAfaChecking_runRpcServer(JNIEnv *env_, jclass BoolAfa_)
 {
     env = env_;
     env->GetJavaVM(&jvm);

@@ -6,6 +6,8 @@ import java.util.Collection;
 import java.util.Optional;
 import java.util.stream.Collectors;
 import java.util.stream.StreamSupport;
+import java.util.Spliterator;
+import java.util.function.Consumer;
 
 import org.sat4j.specs.TimeoutException;
 import org.capnproto.StructList;
@@ -25,10 +27,10 @@ import automata.safa.booleanexpression.PositiveBooleanExpressionFactorySimple;
 import automata.safa.booleanexpression.PositiveId;
 import automata.safa.BooleanExpression;
 import theory.BooleanAlgebra;
-import org.automata.safa.capnp.SeparatedAfaSchema.SeparatedAfa;
-import org.automata.safa.capnp.SeparatedAfaSchema.QTerm;
-import org.automata.safa.capnp.SeparatedAfaSchema.ATerm;
-import org.automata.safa.capnp.SeparatedAfaSchema.Conjunct;
+import org.automata.safa.capnp.Afa.Model.Separated;
+import org.automata.safa.capnp.Afa.Model.Separated.Conjunct11;
+import org.automata.safa.capnp.Afa.Model.Separated.Maybe1;
+import org.automata.safa.capnp.Afa.Model.Term;
 import theory.bdd.BDD;
 import theory.bddalgebra.BDDSolver;
 import theory.sat.SATBooleanAlgebraSimple;
@@ -36,7 +38,42 @@ import theory.sat.SATBooleanAlgebraSimple;
 import utilities.Timers;
 
 
-public class BoolAfa {
+class CapSpliterator implements Spliterator<Integer> {
+    org.capnproto.PrimitiveList.Int.Reader reader;
+    int ix = 0;
+
+    public CapSpliterator(org.capnproto.PrimitiveList.Int.Reader reader) {
+        this.reader = reader;
+    }
+
+    @Override
+    public int characteristics() {
+        return SIZED | NONNULL | IMMUTABLE;
+    }
+
+    @Override
+    public long estimateSize() {
+        return reader.size() - ix;
+    }
+
+    @Override
+    public Spliterator<Integer> trySplit() {
+        return null;
+    }
+
+    @Override
+    public boolean tryAdvance(Consumer<? super Integer> action) {
+        if (ix < reader.size()) {
+            action.accept(reader.get(ix));
+            ix += 1;
+            return true;
+        }
+        else return false;
+    }
+}
+
+
+public class BoolAfaChecking {
     static Boolean GET_SYMBOLS_USING_BDDS =
         Optional.ofNullable(System.getenv("GET_SYMBOLS_USING_BDDS"))
         .orElse("true")
@@ -49,18 +86,17 @@ public class BoolAfa {
     ModelChecking solver;
 
     static PositiveBooleanExpression fromQTerm
-    ( QTerm.Reader qterm
+    ( Term.QTerm11.Reader qterm
     , PositiveBooleanExpression exprs[]
     , PositiveBooleanExpressionFactory factory
     ) {
         switch (qterm.which()) {
         case STATE: return factory.MkState(qterm.getState());
-        case REF: return exprs[qterm.getRef()];
-        case AND: return StreamSupport.stream(qterm.getAnd().spliterator(), false)
-            .map(x -> fromQTerm(x, exprs, factory))
+        case AND: return StreamSupport.stream(new CapSpliterator(qterm.getAnd()), false)
+            .map(x -> exprs[x])
             .reduce((a, b) -> factory.MkAnd(a, b)).get();
-        case OR: return StreamSupport.stream(qterm.getOr().spliterator(), false)
-            .map(x -> fromQTerm(x, exprs, factory))
+        case OR: return StreamSupport.stream(new CapSpliterator(qterm.getOr()), false)
+            .map(x -> exprs[x])
             .reduce((a, b) -> factory.MkOr(a, b)).get();
         case _NOT_IN_SCHEMA:
             System.err.println("not in schema");
@@ -69,22 +105,21 @@ public class BoolAfa {
     }
 
     static Integer sat_formula
-    ( ATerm.Reader aterm
+    ( Term.BoolTerm11.Reader aterm
     , Integer others[]
     , SATBooleanAlgebraSimple algebra
     ) {
         switch (aterm.which()) {
-        case VAR: return aterm.getVar() + 1;
-        case REF: return others[aterm.getRef()];
-        case NOT: return algebra.MkNot(sat_formula(aterm.getNot(), others, algebra));
+        case PREDICATE: return aterm.getPredicate() + 1;
+        case NOT: return algebra.MkNot(others[aterm.getNot()]);
         case AND: return algebra.MkAnd(
-            StreamSupport.stream(aterm.getAnd().spliterator(), false)
-            .map(x -> sat_formula(x, others, algebra))
+            StreamSupport.stream(new CapSpliterator(aterm.getAnd()), false)
+            .map(x -> others[x])
             .collect(Collectors.toList())
         );
         case OR: return algebra.MkOr(
-            StreamSupport.stream(aterm.getOr().spliterator(), false)
-            .map(x -> sat_formula(x, others, algebra))
+            StreamSupport.stream(new CapSpliterator(aterm.getOr()), false)
+            .map(x -> others[x])
             .collect(Collectors.toList())
         );
         case _NOT_IN_SCHEMA:
@@ -94,22 +129,21 @@ public class BoolAfa {
     }
 
     static BDD bdd
-    ( ATerm.Reader aterm
+    ( Term.BoolTerm11.Reader aterm
     , BDD bdds[]
     , BDDSolver solver
     ) {
         switch (aterm.which()) {
-        case VAR: return solver.factory.ithVar(aterm.getVar());
-        case REF: return bdds[aterm.getRef()];
-        case NOT: return solver.MkNot(bdd(aterm.getNot(), bdds, solver));
+        case PREDICATE: return solver.factory.ithVar(aterm.getPredicate());
+        case NOT: return solver.MkNot(bdds[aterm.getNot()]);
         case AND: return solver.MkAnd(
-            StreamSupport.stream(aterm.getAnd().spliterator(), false)
-            .map(x -> bdd(x, bdds, solver))
+            StreamSupport.stream(new CapSpliterator(aterm.getAnd()), false)
+            .map(x -> bdds[x])
             .collect(Collectors.toList())
         );
         case OR: return solver.MkOr(
-            StreamSupport.stream(aterm.getOr().spliterator(), false)
-            .map(x -> bdd(x, bdds, solver))
+            StreamSupport.stream(new CapSpliterator(aterm.getOr()), false)
+            .map(x -> bdds[x])
             .collect(Collectors.toList())
         );
         case _NOT_IN_SCHEMA:
@@ -123,12 +157,12 @@ public class BoolAfa {
     }
 
     public static void main(String[] args) {
-        BoolAfa.runRpcServer();
+        BoolAfaChecking.runRpcServer();
     }
 
     private static native void runRpcServer();
 
-    public BoolAfa(
+    public BoolAfaChecking(
         ByteBuffer[] segments,
         int segment_ix,
         int data_pos,
@@ -136,23 +170,29 @@ public class BoolAfa {
         int data_size_bits,
         short pointer_count
     ) {
-        for (ByteBuffer seg : segments) {
-            seg.order(java.nio.ByteOrder.LITTLE_ENDIAN);
-        }
-
-        ReaderOptions options = ReaderOptions.DEFAULT_READER_OPTIONS;
-        ReaderArena arena = new ReaderArena(segments, options.traversalLimitInWords);
-
-        SegmentReader segment = arena.tryGetSegment(segment_ix);
-        SeparatedAfa.Reader sepafa = SeparatedAfa.factory.constructReader(
-            segment, data_pos*8, pointer_pos, data_size_bits, pointer_count,
-            options.nestingLimit
-        );
-
         try {
-            solver = load(sepafa);
-        } catch (TimeoutException e) {
-            System.err.println("Timeout loading AFA, this should not happen.");
+            for (ByteBuffer seg : segments) {
+                seg.order(java.nio.ByteOrder.LITTLE_ENDIAN);
+            }
+
+            ReaderOptions options = ReaderOptions.DEFAULT_READER_OPTIONS;
+            ReaderArena arena = new ReaderArena(segments, options.traversalLimitInWords);
+
+            SegmentReader segment = arena.tryGetSegment(segment_ix);
+            Separated.BoolAfa.Reader sepafa = Separated.BoolAfa.factory.constructReader(
+                segment, data_pos*8, pointer_pos, data_size_bits, pointer_count,
+                options.nestingLimit
+            );
+
+            try {
+                solver = load(sepafa);
+            } catch (TimeoutException e) {
+                System.err.println("Timeout loading AFA, this should not happen.");
+            }
+        } catch(Exception e) {
+            e.printStackTrace();
+            System.err.println(e);
+            System.err.println("Other exception.");
         }
     }
 
@@ -165,11 +205,11 @@ public class BoolAfa {
     public int getStatus() { return solver.getStatus(); }
     public int getTime() { return solver.getTime(); }
 
-    public static ModelChecking load(SeparatedAfa.Reader sepafa) throws TimeoutException {
+    public static ModelChecking load(Separated.BoolAfa.Reader sepafa) throws TimeoutException {
         int i;
-        StructList.Reader<QTerm.Reader> qterms = sepafa.getQterms();
-        StructList.Reader<ATerm.Reader> aterms = sepafa.getAterms();
-        ListList.Reader<StructList.Reader<Conjunct.Reader>> qdefs = sepafa.getStates();
+        StructList.Reader<Term.QTerm11.Reader> qterms = sepafa.getQterms();
+        StructList.Reader<Term.BoolTerm11.Reader> aterms = sepafa.getAterms();
+        ListList.Reader<StructList.Reader<Conjunct11.Reader>> qdefs = sepafa.getStates();
 
         int state_count = qdefs.size();
 
@@ -185,18 +225,18 @@ public class BoolAfa {
         PositiveBooleanExpression ptrue = positive_factory.True();
 
         i = 0;
-        for (QTerm.Reader qterm: qterms) {
+        for (Term.QTerm11.Reader qterm: qterms) {
             sq_exprs[i] = fromQTerm(qterm, sq_exprs, positive_factory);
             i++;
         }
 
         if (GET_SYMBOLS_USING_BDDS) {
-            BDDSolver algebra = new BDDSolver(sepafa.getVariableCount());
+            BDDSolver algebra = new BDDSolver(sepafa.getVarCount());
             BDD atrue = algebra.factory.one();
 
             BDD sa_bdds[] = new BDD[aterms.size()];
             i = 0;
-            for (ATerm.Reader aterm: aterms) {
+            for (Term.BoolTerm11.Reader aterm: aterms) {
                 sa_bdds[i] = bdd(aterm, sa_bdds, algebra);
                 i++;
             }
@@ -204,14 +244,14 @@ public class BoolAfa {
             Collection<SAFAInputMove<BDD, BDD>> transitions = new ArrayList<>();
             i = 0;
             for (int j = 0; j < state_count; j++) {
-                StructList.Reader<Conjunct.Reader> qdef = qdefs.get(j);
-                for (Conjunct.Reader qdefpart: qdef) {
-                    int qref = qdefpart.getQterm();
-                    int aref = qdefpart.getAterm();
+                StructList.Reader<Conjunct11.Reader> qdef = qdefs.get(j);
+                for (Conjunct11.Reader qdefpart: qdef) {
+                    Maybe1.Reader qref = qdefpart.getQterm();
+                    Maybe1.Reader aref = qdefpart.getAterm();
                     transitions.add(new SAFAInputMove<BDD, BDD>(
                         i,
-                        qref == -1 ? ptrue : sq_exprs[qref],
-                        aref == -1 ? atrue : sa_bdds[aref]
+                        qref.isNothing() ? ptrue : sq_exprs[qref.getJust()],
+                        aref.isNothing() ? atrue : sa_bdds[aref.getJust()]
                     ));
                 }
                 i++;
@@ -234,13 +274,13 @@ public class BoolAfa {
         }
         else {
             SATBooleanAlgebraSimple algebra = new SATBooleanAlgebraSimple(
-                sepafa.getVariableCount()
+                sepafa.getVarCount()
             );
             Integer atrue = algebra.True();
 
             Integer sa_sat_formulas[] = new Integer[aterms.size()];
             i = 0;
-            for (ATerm.Reader aterm: aterms) {
+            for (Term.BoolTerm11.Reader aterm: aterms) {
                 sa_sat_formulas[i] = sat_formula(aterm, sa_sat_formulas, algebra);
                 i++;
             }
@@ -249,14 +289,14 @@ public class BoolAfa {
                 new ArrayList<SAFAInputMove<Integer, boolean[]>>();
             i = 0;
             for (int j = 0; j < state_count; j++) {
-                StructList.Reader<Conjunct.Reader> qdef = qdefs.get(j);
-                for (Conjunct.Reader qdefpart: qdef) {
-                    int qref = qdefpart.getQterm();
-                    int aref = qdefpart.getAterm();
+                StructList.Reader<Conjunct11.Reader> qdef = qdefs.get(j);
+                for (Conjunct11.Reader qdefpart: qdef) {
+                    Maybe1.Reader qref = qdefpart.getQterm();
+                    Maybe1.Reader aref = qdefpart.getAterm();
                     transitions.add(new SAFAInputMove<Integer, boolean[]>(
                         i,
-                        qref == -1 ? ptrue : sq_exprs[qref],
-                        aref == -1 ? atrue : sa_sat_formulas[aref]
+                        qref.isNothing() ? ptrue : sq_exprs[qref.getJust()],
+                        aref.isNothing() ? atrue : sa_sat_formulas[aref.getJust()]
                     ));
                 }
                 i++;
