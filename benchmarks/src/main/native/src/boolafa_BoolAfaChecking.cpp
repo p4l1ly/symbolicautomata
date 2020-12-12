@@ -9,7 +9,7 @@
 #include <capnp/arena.h>
 #include <kj/thread.h>
 
-#include "boolafa_BoolAfa.h"
+#include "boolafa_BoolAfaChecking.h"
 
 #define DIVCEIL(x, y) ((x) == 0 ? 0 : 1 + (((x) - 1) / (y)))
 
@@ -196,7 +196,7 @@ public:
     }
 };
 
-JNIEXPORT void JNICALL Java_boolafa_BoolAfaChecking_runRpcServer(JNIEnv *env_, jclass BoolAfa_)
+JNIEXPORT void JNICALL Java_boolafa_BoolAfaChecking_runRpcServer(JNIEnv *env_, jclass BoolAfa_, jint port)
 {
     env = env_;
     env->GetJavaVM(&jvm);
@@ -211,7 +211,7 @@ JNIEXPORT void JNICALL Java_boolafa_BoolAfaChecking_runRpcServer(JNIEnv *env_, j
     BoolAfa_cancel = env->GetMethodID(BoolAfa, "cancel", "()I");
     ByteBuffer = env->FindClass("java/nio/ByteBuffer");
 
-    capnp::EzRpcServer server(kj::heap<LoaderImpl>(), "0.0.0.0", 4001);
+    capnp::EzRpcServer server(kj::heap<LoaderImpl>(), "0.0.0.0", (int)port);
     auto& waitScope = server.getWaitScope();
     kj::NEVER_DONE.wait(waitScope);
 }

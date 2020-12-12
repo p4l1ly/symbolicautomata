@@ -82,6 +82,10 @@ public class BoolAfaChecking {
         Optional.ofNullable(System.getenv("GET_SUCCESSORS_USING_BDDS"))
         .orElse("false")
         .equals("true");
+    static Integer RPC_PORT = Integer.parseInt(
+        Optional.ofNullable(System.getenv("RPC_PORT"))
+        .orElse("4001")
+    );
 
     ModelChecking solver;
 
@@ -157,10 +161,11 @@ public class BoolAfaChecking {
     }
 
     public static void main(String[] args) {
-        BoolAfaChecking.runRpcServer();
+        System.out.println("Listening on " + RPC_PORT);
+        BoolAfaChecking.runRpcServer(RPC_PORT);
     }
 
-    private static native void runRpcServer();
+    private static native void runRpcServer(int port);
 
     public BoolAfaChecking(
         ByteBuffer[] segments,

@@ -16,7 +16,7 @@ find_package(JNI)
 add_library(
   boolafaRpc
   SHARED
-  src/main/native/src/boolafa_BoolAfa.cpp
+  src/main/native/src/boolafa_BoolAfaChecking.cpp
 )
 target_include_directories(
   boolafaRpc
